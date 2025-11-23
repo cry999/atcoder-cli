@@ -7,10 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 
-	"github.com/cry999/atcoder-cli/api"
+	"github.com/cry999/atcoder-cli/command"
 	"github.com/cry999/atcoder-cli/config"
 	"github.com/cry999/atcoder-cli/contests"
 	"github.com/cry999/atcoder-cli/contests/adt"
@@ -43,7 +41,7 @@ func main() {
 		return
 	}
 
-	contestFamily := flag.Arg(0)
+	contestFamily := flag.Arg(1)
 	if contestFamily == "" {
 		slog.ErrorContext(ctx, "contest family argument is required")
 		return
@@ -53,12 +51,12 @@ func main() {
 	switch contestFamily {
 	// AtCoder Daily Training
 	case "adt":
-		family, err = adt.New(flag.Arg(1), flag.Arg(2), *adtLevel)
+		family, err = adt.New(flag.Arg(2), flag.Arg(3), *adtLevel)
 		if err != nil {
 			slog.ErrorContext(
 				ctx, "failed to parse ADT family",
-				slog.String("date", flag.Arg(1)),
-				slog.String("time", flag.Arg(2)),
+				slog.String("date", flag.Arg(2)),
+				slog.String("time", flag.Arg(3)),
 				slog.String("err", err.Error()),
 			)
 			return
@@ -68,40 +66,30 @@ func main() {
 		return
 	}
 
-	baseDir := family.BaseDir(config.WorkDir)
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		slog.ErrorContext(ctx, "failed to create working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
-		return
-	}
-	if err := os.Chdir(baseDir); err != nil {
-		slog.ErrorContext(ctx, "failed to change working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
-		return
-	}
-
-	client := api.NewClient(family)
-
-	tasks, err := client.FetchTaskList(ctx)
+	cmd, err := command.NewCommand(ctx, family, config.WorkDir)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to fetch task list", slog.String("err", err.Error()))
+		slog.ErrorContext(ctx, "failed to create command", slog.String("err", err.Error()))
 		return
 	}
-	for _, task := range tasks {
-		if err := os.Mkdir(task.Index, 0755); err != nil && !os.IsExist(err) {
-			slog.ErrorContext(ctx, "failed to create task directory", slog.String("dir", task.Index), slog.String("err", err.Error()))
+
+	switch flag.Arg(0) {
+	case "init":
+		if err := cmd.FetchSampleIO(ctx); err != nil {
+			slog.ErrorContext(ctx, "failed to fetch sample IO", slog.String("err", err.Error()))
 			return
 		}
-		err = client.FetchSampleIOs(ctx, task)
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to fetch sample IOs", slog.String("err", err.Error()))
+	case "test":
+		taskIndex := flag.Arg(4)
+		if taskIndex == "" {
+			fmt.Println("task index argument is required for test command")
 			return
 		}
-		for i, io := range task.SampleIOs {
-			if err := os.WriteFile(filepath.Join(task.Index, fmt.Sprintf("input-%02d.txt", i)), []byte(strings.Join(io.Input, "\n")+"\n"), 0644); err != nil {
-				slog.ErrorContext(ctx, "failed to write sample input file", slog.String("file", filepath.Join(task.Index, fmt.Sprintf("input-%s.txt", task.Index))), slog.String("err", err.Error()))
-			}
-			if err := os.WriteFile(filepath.Join(task.Index, fmt.Sprintf("output-%02d.txt", i)), []byte(strings.Join(io.Output, "\n")+"\n"), 0644); err != nil {
-				slog.ErrorContext(ctx, "failed to write sample output file", slog.String("file", filepath.Join(task.Index, fmt.Sprintf("output-%s.txt", task.Index))), slog.String("err", err.Error()))
-			}
+		if err := cmd.RunTest(ctx, taskIndex); err != nil {
+			slog.ErrorContext(ctx, "failed to run tests", slog.String("err", err.Error()))
+			return
 		}
+	default:
+		slog.ErrorContext(ctx, "unknown command", slog.String("command", flag.Arg(0)))
+		return
 	}
 }

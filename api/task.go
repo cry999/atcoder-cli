@@ -32,7 +32,11 @@ func (c *Client) FetchTaskList(ctx context.Context) ([]*Task, error) {
 
 	slog.InfoContext(ctx, "fetching task list", slog.String("url", taskListURL.String()))
 
-	resp, err := http.Get(taskListURL.String())
+	req, err := http.NewRequestWithContext(ctx, "GET", taskListURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -99,16 +103,18 @@ func (c *Client) FetchSampleIOs(ctx context.Context, task *Task) error {
 	taskURL := task.URL
 	slog.InfoContext(ctx, "fetching sample IOs", slog.String("url", taskURL.String()))
 
-	resp, err := http.Get(taskURL.String())
+	req, err := http.NewRequestWithContext(ctx, "GET", taskURL.String(), nil)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to send GET request", slog.String("url", taskURL.String()), slog.String("err", err.Error()))
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	root, err := html.Parse(resp.Body)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to parse HTML", slog.String("url", taskURL.String()), slog.String("err", err.Error()))
 		return err
 	}
 
@@ -144,7 +150,6 @@ func (c *Client) FetchSampleIOs(ctx context.Context, task *Task) error {
 		if rawNumber != "" {
 			number, err = strconv.Atoi(rawNumber)
 			if err != nil {
-				slog.ErrorContext(ctx, "failed to parse example number", slog.String("data", numberNode.Data), slog.String("err", err.Error()))
 				return false
 			}
 		} else {
