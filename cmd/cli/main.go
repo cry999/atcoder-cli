@@ -23,12 +23,18 @@ func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
 
-type inout struct {
+type TaskSampleIO struct {
 	Input  []string
 	Output []string
 }
 
-func (io *inout) String() string {
+type Task struct {
+	URL       *url.URL
+	Index     string
+	SampleIOs []*TaskSampleIO
+}
+
+func (io *TaskSampleIO) String() string {
 	return fmt.Sprintf("Input: %q // Output: %q", io.Input, io.Output)
 }
 
@@ -36,34 +42,114 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	err := fetchSampleIOs(ctx)
+	taskListURL := &url.URL{
+		Scheme: "https",
+		Host:   DOMAIN,
+		Path:   path.Join("contests", "adt_hard_20251120_3", "tasks", ""),
+	}
+
+	tasks, err := fetchTaskList(ctx, taskListURL)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to fetch sample IOs", slog.String("err", err.Error()))
+		slog.ErrorContext(ctx, "failed to fetch task list", slog.String("err", err.Error()))
 		return
+	}
+	for _, task := range tasks {
+		err = fetchSampleIOs(ctx, task)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to fetch sample IOs", slog.String("err", err.Error()))
+			return
+		}
 	}
 }
 
-func fetchSampleIOs(ctx context.Context) error {
-	u := &url.URL{
-		Scheme: "https",
-		Host:   DOMAIN,
-		Path:   path.Join("contests", "adt_hard_20251120_3", "tasks", "abc427_c"),
-	}
-	fmt.Println(u.String())
-	resp, err := http.Get(u.String())
+func fetchTaskList(ctx context.Context, taskListURL *url.URL) ([]*Task, error) {
+	slog.InfoContext(ctx, "fetching task list", slog.String("url", taskListURL.String()))
+
+	resp, err := http.Get(taskListURL.String())
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to send GET request", slog.String("url", u.String()), slog.String("err", err.Error()))
+		slog.ErrorContext(ctx, "failed to send GET request", slog.String("url", taskListURL.String()), slog.String("err", err.Error()))
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	root, err := html.Parse(resp.Body)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to parse HTML", slog.String("url", taskListURL.String()), slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	tbody, err := findOneNode(root, func(n *html.Node) bool {
+		p := n.Parent
+		if p == nil || p.Type != html.ElementNode || p.Data != "table" {
+			return false
+		}
+		return n.Type == html.ElementNode && n.Data == "tbody"
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to find tbody", slog.String("url", taskListURL.String()), slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	var taskList []*Task
+	for tr := range tbody.ChildNodes() {
+		firstTD, err := findOneNode(tr, func(n *html.Node) bool {
+			return n.Parent == tr && n.Type == html.ElementNode && n.Data == "td"
+		})
+		var href, text string
+		_, err = findOneNode(tr, func(n *html.Node) bool {
+			if n.Type != html.ElementNode || n.Data != "a" || n.Parent != firstTD {
+				return false
+			}
+			a := n
+
+			var ok bool
+			href, ok = getAttr(n, "href")
+			if !ok {
+				return false
+			}
+
+			textNode, err := findOneNode(n, func(n *html.Node) bool {
+				return n.Parent == a && n.Type == html.TextNode
+			})
+			if err != nil {
+				return false
+			}
+			text = textNode.Data
+
+			return true
+		})
+		if err != nil {
+			continue
+		}
+		taskURL, err := taskListURL.Parse(href)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to parse task URL", slog.String("base_url", taskListURL.String()), slog.String("href", href), slog.String("err", err.Error()))
+			return nil, err
+		}
+		taskList = append(taskList, &Task{URL: taskURL, Index: text})
+		slog.InfoContext(ctx, "found task", slog.String("data", firstTD.Data))
+	}
+	return taskList, nil
+}
+
+func fetchSampleIOs(ctx context.Context, task *Task) error {
+	taskURL := task.URL
+	slog.InfoContext(ctx, "fetching sample IOs", slog.String("url", taskURL.String()))
+
+	resp, err := http.Get(taskURL.String())
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to send GET request", slog.String("url", taskURL.String()), slog.String("err", err.Error()))
 		return err
 	}
 	defer resp.Body.Close()
 
 	root, err := html.Parse(resp.Body)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to parse HTML", slog.String("url", u.String()), slog.String("err", err.Error()))
+		slog.ErrorContext(ctx, "failed to parse HTML", slog.String("url", taskURL.String()), slog.String("err", err.Error()))
 		return err
 	}
 
-	inouts := map[string]*inout{}
+	inouts := map[string]*TaskSampleIO{}
 
 	_ = findAllNodes(root, func(node *html.Node) bool {
 		if node.Type != html.ElementNode && node.Data != "section" {
@@ -95,7 +181,7 @@ func fetchSampleIOs(ctx context.Context) error {
 			string([]rune(numberNode.Data)[4:]), "出力例"), "入力例"))
 		isInput := strings.HasPrefix(numberNode.Data, "入力例")
 		if _, ok := inouts[number]; !ok {
-			inouts[number] = &inout{}
+			inouts[number] = &TaskSampleIO{}
 		}
 
 		// section > pre > (text node) を取得
@@ -286,4 +372,13 @@ func attrIs(n *html.Node, k, v string) bool {
 		}
 	}
 	return false
+}
+
+func getAttr(n *html.Node, k string) (string, bool) {
+	for _, a := range n.Attr {
+		if a.Key == k {
+			return a.Val, true
+		}
+	}
+	return "", false
 }
