@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,9 +12,13 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/BurntSushi/toml"
 	"golang.org/x/net/html"
 )
 
@@ -22,6 +27,28 @@ const DOMAIN = "atcoder.jp"
 func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
+
+// Config represents the configuration for the CLI tool.
+type Config struct {
+	WorkDir string    `toml:"workdir"`
+	ADT     ADTConfig `toml:"adt"`
+}
+
+// ADTConfig represents the configuration specific to AtCoder Daily Training contests.
+type ADTConfig struct {
+	DefaultLevel ADTLevel `toml:"default_level"`
+}
+
+// ADTLevel represents the difficulty level for ADT problems.
+type ADTLevel string
+
+// Possible values for ADTLevel.
+var (
+	ADTLevelEasy   ADTLevel = "easy"
+	ADTLevelMedium ADTLevel = "medium"
+	ADTLevelHard   ADTLevel = "hard"
+	ADTLevelAll    ADTLevel = "all"
+)
 
 type TaskSampleIO struct {
 	Input  []string
@@ -34,18 +61,140 @@ type Task struct {
 	SampleIOs []*TaskSampleIO
 }
 
-func (io *TaskSampleIO) String() string {
-	return fmt.Sprintf("Input: %q // Output: %q", io.Input, io.Output)
+// adtDaysHolds is adtDaysHolds[weekday][time] = number in the day
+var adtDaysHolds = map[time.Weekday]map[string]int{
+	time.Tuesday:   {"1530": 1, "1730": 2, "1930": 3},
+	time.Wednesday: {"1600": 1, "1800": 2, "2000": 3},
+	time.Thursday:  {"1630": 1, "1830": 2, "2030": 3},
 }
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// load config
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		var err error
+		configHome, err = os.UserConfigDir()
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to get user config dir", slog.String("err", err.Error()))
+			return
+		}
+	}
+	configFilePath := filepath.Join(configHome, "atcoder-cli", "config.toml")
+	configFile, err := os.Open(configFilePath)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to open config file", slog.String("file", configFilePath), slog.String("err", err.Error()))
+		return
+	}
+	defer configFile.Close()
+
+	var config Config
+	if _, err := toml.NewDecoder(configFile).Decode(&config); err != nil {
+		slog.ErrorContext(ctx, "failed to load config file", slog.String("file", configFilePath), slog.String("err", err.Error()))
+		return
+	}
+
+	config.WorkDir = os.ExpandEnv(config.WorkDir)
+	if config.WorkDir == "" {
+		config.WorkDir, err = os.Getwd()
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to get current working directory", slog.String("err", err.Error()))
+			return
+		}
+	}
+	if config.ADT.DefaultLevel == "" {
+		config.ADT.DefaultLevel = ADTLevelAll
+	}
+
+	var (
+		dumpConfig = flag.Bool("dump-config", false, "Dump loaded config and exit")
+		adtLevel   = flag.String("adt-level", string(config.ADT.DefaultLevel), "Default level for ADT problems (easy, medium, hard, all)")
+	)
+	flag.Parse()
+
+	if *dumpConfig {
+		enc := toml.NewEncoder(os.Stdout)
+		enc.Indent = "  "
+		if err := enc.Encode(config); err != nil {
+			slog.ErrorContext(ctx, "failed to dump config", slog.String("err", err.Error()))
+		}
+		return
+	}
+
+	contestFamily := flag.Arg(0)
+	if contestFamily == "" {
+		slog.ErrorContext(ctx, "contest family argument is required")
+		return
+	}
+
+	var contest string
+	switch contestFamily {
+	// AtCoder Beginner Contest
+	case "abc":
+		slog.ErrorContext(ctx, "ABC contests are not supported yet")
+		return
+
+	// AtCoder Daily Training
+	case "adt":
+		rawDate, rawTime := flag.Arg(1), flag.Arg(2)
+		if rawDate == "" || rawTime == "" {
+			slog.ErrorContext(ctx, "ADT contest requires date and time arguments")
+			return
+		}
+		date, err := time.Parse("20060102", rawDate)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to parse date", slog.String("date", rawDate), slog.String("err", err.Error()))
+			return
+		}
+		timeToNumber, ok := adtDaysHolds[date.Weekday()]
+		if !ok {
+			slog.ErrorContext(ctx, "no ADT contest on this day", slog.String("date", rawDate), slog.String("weekday", date.Weekday().String()))
+			return
+		}
+		number, ok := timeToNumber[rawTime]
+		if !ok {
+			slog.ErrorContext(ctx, "no ADT contest at this time", slog.String("date", rawDate), slog.String("time", rawTime))
+			return
+		}
+		contest = fmt.Sprintf("adt_%s_%s_%d", *adtLevel, date.Format("20060102"), number)
+
+		baseDir := filepath.Join(
+			config.WorkDir,
+			"adt",
+			fmt.Sprintf("%04d", date.Year()),
+			fmt.Sprintf("%02d", date.Month()),
+			fmt.Sprintf("%02d", date.Day()),
+			rawTime,
+		)
+		if err := os.MkdirAll(baseDir, 0755); err != nil {
+			slog.ErrorContext(ctx, "failed to create working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
+			return
+		}
+		if err := os.Chdir(baseDir); err != nil {
+			slog.ErrorContext(ctx, "failed to change working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
+			return
+		}
+
+	// AtCoder Regular Contest
+	case "arc":
+		slog.ErrorContext(ctx, "ARC contests are not supported yet")
+		return
+	// AtCoder Grand Contest
+	case "agc":
+		slog.ErrorContext(ctx, "AGC contests are not supported yet")
+		return
+
+	default:
+		slog.ErrorContext(ctx, "unknown contest type", slog.String("contest", contestFamily))
+		return
+	}
+
 	taskListURL := &url.URL{
 		Scheme: "https",
 		Host:   DOMAIN,
-		Path:   path.Join("contests", "adt_hard_20251120_3", "tasks", ""),
+		Path:   path.Join("contests", contest, "tasks"),
 	}
 
 	tasks, err := fetchTaskList(ctx, taskListURL)
@@ -54,10 +203,22 @@ func main() {
 		return
 	}
 	for _, task := range tasks {
+		if err := os.Mkdir(task.Index, 0755); err != nil && !os.IsExist(err) {
+			slog.ErrorContext(ctx, "failed to create task directory", slog.String("dir", task.Index), slog.String("err", err.Error()))
+			return
+		}
 		err = fetchSampleIOs(ctx, task)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to fetch sample IOs", slog.String("err", err.Error()))
 			return
+		}
+		for i, io := range task.SampleIOs {
+			if err := os.WriteFile(filepath.Join(task.Index, fmt.Sprintf("input-%02d.txt", i)), []byte(strings.Join(io.Input, "\n")+"\n"), 0644); err != nil {
+				slog.ErrorContext(ctx, "failed to write sample input file", slog.String("file", filepath.Join(task.Index, fmt.Sprintf("input-%s.txt", task.Index))), slog.String("err", err.Error()))
+			}
+			if err := os.WriteFile(filepath.Join(task.Index, fmt.Sprintf("output-%02d.txt", i)), []byte(strings.Join(io.Output, "\n")+"\n"), 0644); err != nil {
+				slog.ErrorContext(ctx, "failed to write sample output file", slog.String("file", filepath.Join(task.Index, fmt.Sprintf("output-%s.txt", task.Index))), slog.String("err", err.Error()))
+			}
 		}
 	}
 }
@@ -149,8 +310,6 @@ func fetchSampleIOs(ctx context.Context, task *Task) error {
 		return err
 	}
 
-	inouts := map[string]*TaskSampleIO{}
-
 	_ = findAllNodes(root, func(node *html.Node) bool {
 		if node.Type != html.ElementNode && node.Data != "section" {
 			return false
@@ -177,11 +336,24 @@ func fetchSampleIOs(ctx context.Context, task *Task) error {
 		}
 		slog.InfoContext(ctx, "section has example number", slog.String("data", numberNode.Data))
 
-		number := strings.TrimSpace(strings.TrimLeft(strings.TrimLeft(
+		rawNumber := strings.TrimSpace(strings.TrimLeft(strings.TrimLeft(
 			string([]rune(numberNode.Data)[4:]), "出力例"), "入力例"))
+		var number int
+		if rawNumber != "" {
+			number, err = strconv.Atoi(rawNumber)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to parse example number", slog.String("data", numberNode.Data), slog.String("err", err.Error()))
+				return false
+			}
+		} else {
+			number = 1
+		}
+		if len(task.SampleIOs) < number {
+			task.SampleIOs = append(task.SampleIOs, make([]*TaskSampleIO, number-len(task.SampleIOs))...)
+		}
 		isInput := strings.HasPrefix(numberNode.Data, "入力例")
-		if _, ok := inouts[number]; !ok {
-			inouts[number] = &TaskSampleIO{}
+		if task.SampleIOs[number-1] == nil {
+			task.SampleIOs[number-1] = &TaskSampleIO{}
 		}
 
 		// section > pre > (text node) を取得
@@ -199,40 +371,13 @@ func fetchSampleIOs(ctx context.Context, task *Task) error {
 			return false
 		}
 		if isInput {
-			inouts[number].Input = strings.Split(strings.TrimSpace(exampleNode.Data), "\n")
+			task.SampleIOs[number-1].Input = strings.Split(strings.TrimSpace(exampleNode.Data), "\n")
 		} else {
-			inouts[number].Output = strings.Split(strings.TrimSpace(exampleNode.Data), "\n")
+			task.SampleIOs[number-1].Output = strings.Split(strings.TrimSpace(exampleNode.Data), "\n")
 		}
 		return true
 	})
 
-	for num, io := range inouts {
-		input, err := os.OpenFile(fmt.Sprintf("sample-%s-input.txt", num), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to open input file", slog.String("file", fmt.Sprintf("sample-%s-input.txt", num)), slog.String("err", err.Error()))
-			return err
-		}
-		defer input.Close()
-
-		_, err = input.WriteString(strings.Join(io.Input, "\n") + "\n")
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to write input file", slog.String("file", fmt.Sprintf("sample-%s-input.txt", num)), slog.String("err", err.Error()))
-			return err
-		}
-
-		output, err := os.OpenFile(fmt.Sprintf("sample-%s-output.txt", num), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to open output file", slog.String("file", fmt.Sprintf("sample-%s-output.txt", num)), slog.String("err", err.Error()))
-			return err
-		}
-		defer output.Close()
-
-		_, err = output.WriteString(strings.Join(io.Output, "\n") + "\n")
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to write output file", slog.String("file", fmt.Sprintf("sample-%s-output.txt", num)), slog.String("err", err.Error()))
-			return err
-		}
-	}
 	return nil
 }
 
