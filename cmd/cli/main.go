@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
+	"github.com/cry999/atcoder-cli/config"
 	"golang.org/x/net/html"
 )
 
@@ -27,28 +27,6 @@ const DOMAIN = "atcoder.jp"
 func init() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
-
-// Config represents the configuration for the CLI tool.
-type Config struct {
-	WorkDir string    `toml:"workdir"`
-	ADT     ADTConfig `toml:"adt"`
-}
-
-// ADTConfig represents the configuration specific to AtCoder Daily Training contests.
-type ADTConfig struct {
-	DefaultLevel ADTLevel `toml:"default_level"`
-}
-
-// ADTLevel represents the difficulty level for ADT problems.
-type ADTLevel string
-
-// Possible values for ADTLevel.
-var (
-	ADTLevelEasy   ADTLevel = "easy"
-	ADTLevelMedium ADTLevel = "medium"
-	ADTLevelHard   ADTLevel = "hard"
-	ADTLevelAll    ADTLevel = "all"
-)
 
 type TaskSampleIO struct {
 	Input  []string
@@ -72,40 +50,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// load config
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		var err error
-		configHome, err = os.UserConfigDir()
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to get user config dir", slog.String("err", err.Error()))
-			return
-		}
-	}
-	configFilePath := filepath.Join(configHome, "atcoder-cli", "config.toml")
-	configFile, err := os.Open(configFilePath)
+	config, err := config.LoadConfig(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to open config file", slog.String("file", configFilePath), slog.String("err", err.Error()))
+		slog.ErrorContext(ctx, "failed to load config", slog.String("err", err.Error()))
 		return
-	}
-	defer configFile.Close()
-
-	var config Config
-	if _, err := toml.NewDecoder(configFile).Decode(&config); err != nil {
-		slog.ErrorContext(ctx, "failed to load config file", slog.String("file", configFilePath), slog.String("err", err.Error()))
-		return
-	}
-
-	config.WorkDir = os.ExpandEnv(config.WorkDir)
-	if config.WorkDir == "" {
-		config.WorkDir, err = os.Getwd()
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to get current working directory", slog.String("err", err.Error()))
-			return
-		}
-	}
-	if config.ADT.DefaultLevel == "" {
-		config.ADT.DefaultLevel = ADTLevelAll
 	}
 
 	var (
@@ -115,9 +63,7 @@ func main() {
 	flag.Parse()
 
 	if *dumpConfig {
-		enc := toml.NewEncoder(os.Stdout)
-		enc.Indent = "  "
-		if err := enc.Encode(config); err != nil {
+		if err := config.Dump(os.Stdout); err != nil {
 			slog.ErrorContext(ctx, "failed to dump config", slog.String("err", err.Error()))
 		}
 		return
