@@ -16,9 +16,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cry999/atcoder-cli/config"
+	"github.com/cry999/atcoder-cli/contests"
+	"github.com/cry999/atcoder-cli/contests/adt"
 	"golang.org/x/net/html"
 )
 
@@ -37,13 +38,6 @@ type Task struct {
 	URL       *url.URL
 	Index     string
 	SampleIOs []*TaskSampleIO
-}
-
-// adtDaysHolds is adtDaysHolds[weekday][time] = number in the day
-var adtDaysHolds = map[time.Weekday]map[string]int{
-	time.Tuesday:   {"1530": 1, "1730": 2, "1930": 3},
-	time.Wednesday: {"1600": 1, "1800": 2, "2000": 3},
-	time.Thursday:  {"1630": 1, "1830": 2, "2030": 3},
 }
 
 func main() {
@@ -75,72 +69,39 @@ func main() {
 		return
 	}
 
-	var contest string
+	var family contests.Family
 	switch contestFamily {
-	// AtCoder Beginner Contest
-	case "abc":
-		slog.ErrorContext(ctx, "ABC contests are not supported yet")
-		return
-
 	// AtCoder Daily Training
 	case "adt":
-		rawDate, rawTime := flag.Arg(1), flag.Arg(2)
-		if rawDate == "" || rawTime == "" {
-			slog.ErrorContext(ctx, "ADT contest requires date and time arguments")
-			return
-		}
-		date, err := time.Parse("20060102", rawDate)
+		family, err = adt.New(flag.Arg(1), flag.Arg(2), *adtLevel)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to parse date", slog.String("date", rawDate), slog.String("err", err.Error()))
+			slog.ErrorContext(
+				ctx, "failed to parse ADT family",
+				slog.String("date", flag.Arg(1)),
+				slog.String("time", flag.Arg(2)),
+				slog.String("err", err.Error()),
+			)
 			return
 		}
-		timeToNumber, ok := adtDaysHolds[date.Weekday()]
-		if !ok {
-			slog.ErrorContext(ctx, "no ADT contest on this day", slog.String("date", rawDate), slog.String("weekday", date.Weekday().String()))
-			return
-		}
-		number, ok := timeToNumber[rawTime]
-		if !ok {
-			slog.ErrorContext(ctx, "no ADT contest at this time", slog.String("date", rawDate), slog.String("time", rawTime))
-			return
-		}
-		contest = fmt.Sprintf("adt_%s_%s_%d", *adtLevel, date.Format("20060102"), number)
-
-		baseDir := filepath.Join(
-			config.WorkDir,
-			"adt",
-			fmt.Sprintf("%04d", date.Year()),
-			fmt.Sprintf("%02d", date.Month()),
-			fmt.Sprintf("%02d", date.Day()),
-			rawTime,
-		)
-		if err := os.MkdirAll(baseDir, 0755); err != nil {
-			slog.ErrorContext(ctx, "failed to create working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
-			return
-		}
-		if err := os.Chdir(baseDir); err != nil {
-			slog.ErrorContext(ctx, "failed to change working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
-			return
-		}
-
-	// AtCoder Regular Contest
-	case "arc":
-		slog.ErrorContext(ctx, "ARC contests are not supported yet")
-		return
-	// AtCoder Grand Contest
-	case "agc":
-		slog.ErrorContext(ctx, "AGC contests are not supported yet")
-		return
-
 	default:
 		slog.ErrorContext(ctx, "unknown contest type", slog.String("contest", contestFamily))
+		return
+	}
+
+	baseDir := family.BaseDir(config.WorkDir)
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		slog.ErrorContext(ctx, "failed to create working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
+		return
+	}
+	if err := os.Chdir(baseDir); err != nil {
+		slog.ErrorContext(ctx, "failed to change working directory", slog.String("dir", baseDir), slog.String("err", err.Error()))
 		return
 	}
 
 	taskListURL := &url.URL{
 		Scheme: "https",
 		Host:   DOMAIN,
-		Path:   path.Join("contests", contest, "tasks"),
+		Path:   path.Join("contests", family.ContestName(), "tasks"),
 	}
 
 	tasks, err := fetchTaskList(ctx, taskListURL)
