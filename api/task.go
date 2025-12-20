@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -55,7 +56,7 @@ func (c *Client) FetchTaskList(ctx context.Context) ([]*Task, error) {
 		return n.Type == html.ElementNode && n.Data == "tbody"
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("no tbody: %w", err)
 	}
 
 	var taskList []*Task

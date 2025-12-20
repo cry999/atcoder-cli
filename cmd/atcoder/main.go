@@ -31,6 +31,8 @@ func main() {
 	var (
 		dumpConfig = flag.Bool("dump-config", false, "Dump loaded config and exit")
 		adtLevel   = flag.String("adt-level", string(config.ADT.DefaultLevel), "Default level for ADT problems (easy, medium, hard, all)")
+		testcase   = flag.String("testcase", "all", "Which testcases to run (all, 0, 1, 2, ...)")
+		verbose    = flag.Bool("v", false, "Enable verbose logging")
 	)
 	flag.Parse()
 
@@ -84,7 +86,14 @@ func main() {
 			fmt.Println("task index argument is required for test command")
 			return
 		}
-		if err := cmd.RunTest(ctx, taskIndex); err != nil {
+		var opts command.TestOptions
+		if *testcase != "all" {
+			opts = append(opts, command.TestWithTestcase(*testcase))
+		}
+		if *verbose {
+			opts = append(opts, command.TestWithVerbose())
+		}
+		if err := cmd.RunTest(ctx, taskIndex, opts...); err != nil {
 			slog.ErrorContext(ctx, "failed to run tests", slog.String("err", err.Error()))
 			return
 		}
