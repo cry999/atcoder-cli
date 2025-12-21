@@ -1,6 +1,7 @@
 package adt
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -31,11 +32,11 @@ func New(rawDate, rawTime, rawLevel string) (*Family, error) {
 	}
 	timeToNumber, ok := dailyHolds[date.Weekday()]
 	if !ok {
-		return nil, err
+		return nil, errors.New("no ADT held on this date")
 	}
 	number, ok := timeToNumber[rawTime]
 	if !ok {
-		return nil, err
+		return nil, errors.New("no ADT held at this time on this date")
 	}
 
 	// TODO: validate rawLevel
