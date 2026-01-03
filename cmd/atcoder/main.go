@@ -12,6 +12,7 @@ import (
 	"github.com/cry999/atcoder-cli/config"
 	"github.com/cry999/atcoder-cli/contests"
 	"github.com/cry999/atcoder-cli/contests/adt"
+	"github.com/cry999/atcoder-cli/contests/dp"
 )
 
 func init() {
@@ -50,6 +51,7 @@ func main() {
 	}
 
 	var family contests.Family
+	var taskIndex string
 	switch contestFamily {
 	// AtCoder Daily Training
 	case "adt":
@@ -63,6 +65,17 @@ func main() {
 			)
 			return
 		}
+		taskIndex = flag.Arg(4)
+	case "dp":
+		family, err = dp.New()
+		if err != nil {
+			slog.ErrorContext(
+				ctx, "failed to parse ADT family",
+				slog.String("err", err.Error()),
+			)
+			return
+		}
+		taskIndex = flag.Arg(2)
 	default:
 		slog.ErrorContext(ctx, "unknown contest type", slog.String("contest", contestFamily))
 		return
@@ -81,7 +94,6 @@ func main() {
 			return
 		}
 	case "test":
-		taskIndex := flag.Arg(4)
 		if taskIndex == "" {
 			fmt.Println("task index argument is required for test command")
 			return
